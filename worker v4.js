@@ -14,41 +14,9 @@ export default {
         if (url.pathname === '/test') {
           await push(env, {
             title: 'New Sale!',
-            message: `€29.99 from Online Store\nToday: €420.00 · 12 orders\n• ${shopName(env)}`,
+            message: `$29.99 from Online Store\nToday: $420.00 · 12 orders\n• ${shopName(env)}`,
           });
           return new Response('✅ Test notification sent! Check your phones.');
-        }
-
-        // TEMP: remove after fixing summary totals
-        if (url.pathname === '/debug') {
-          const now = new Date();
-          const from = startOfDay(env, now);
-          const query = new URLSearchParams({
-            'statuses[]': 'completed',
-            completed_at_start: from.toISOString(),
-            completed_at_end: now.toISOString(),
-            perPage: '100',
-            all: '1',
-          });
-          const res = await sellauth(env, `/invoices?${query}`);
-          return Response.json({
-            from,
-            to: now,
-            total: res.total,
-            last_page: res.last_page,
-            invoices: (res.data ?? []).map((i) => ({
-              id: i.id,
-              status: i.status,
-              price: i.price,
-              price_usd: i.price_usd,
-              paid_usd: i.paid_usd,
-              currency: i.currency,
-              created_at: i.created_at,
-              completed_at: i.completed_at,
-              subscription: i.product_subscription_id ?? null,
-              cycle: i.subscription_cycle ?? null,
-            })),
-          });
         }
 
         if (url.pathname === '/summary') {
@@ -110,19 +78,19 @@ async function buildNotification(event, data, env) {
         getStats(env, startOfDay(env), new Date()),
         type === 'sale' ? '' : subscriptionLine(env),
       ]);
-      const amount = money(invoice.price, invoice.currency);
+      const amount = money(invoice.price_usd);
 
       const headline = {
         sale: ['New Sale!', `${amount} from Online Store`],
         newSub: ['New Subscriber!', `${amount} new subscription`],
-        renewal: ['Subscription Renewed', `${amount} renewal · cycle ${invoice.subscription_cycle}`],
+        renewal: ['Subscription Renewed', `${amount} renewal`],
       }[type];
 
       return {
         title: headline[0],
         message:
           `${headline[1]}\n` +
-          `Today: ${money(today.revenue, invoice.currency)} · ${plural(today.orders, 'order')}\n` +
+          `Today: ${money(today.revenue)} · ${plural(today.orders, 'order')}\n` +
           (subs ? `${subs}\n` : '') +
           `• ${shopName(env)}`,
       };
@@ -169,7 +137,7 @@ async function sendSummary(env) {
     message = 'No orders yet today';
   } else {
     message =
-      `${money(today.revenue, today.currency)} · ${plural(today.orders, 'order')} today\n` +
+      `${money(today.revenue)} · ${plural(today.orders, 'order')} today\n` +
       `${plural(today.sale, 'sale')} · ${plural(today.newSub, 'new subscriber')} · ${plural(today.renewal, 'renewal')}`;
   }
 
@@ -190,36 +158,44 @@ async function subscriptionLine(env) {
   return `MRR: ${money(stats.mrr_usd)} · ${plural(stats.active, 'subscriber')}`;
 }
 
-// ponytail: sums invoice `price` and assumes one shop currency; switch to price_usd if you sell in several.
+// Revenue in USD, like the dashboard: invoices can be in different currencies.
 async function getStats(env, from, to) {
-  const stats = { revenue: 0, orders: 0, sale: 0, newSub: 0, renewal: 0, currency: null };
+  const stats = { revenue: 0, orders: 0, sale: 0, newSub: 0, renewal: 0 };
+  const invoices = await listAll(env, '/invoices', {
+    'statuses[]': 'completed',
+    completed_at_start: from.toISOString(),
+    completed_at_end: to.toISOString(),
+    all: '1',
+  });
+
+  for (const invoice of invoices) {
+    // Re-check filters in case the API ignores them.
+    const completedAt = Date.parse(invoice.completed_at);
+    if (invoice.status !== 'completed' || !(completedAt >= from && completedAt <= to)) continue;
+
+    stats.revenue += Number(invoice.price_usd) || 0;
+    stats.orders++;
+    stats[saleType(invoice)]++;
+  }
+
+  return stats;
+}
+
+async function listAll(env, path, params) {
+  const rows = [];
 
   for (let page = 1; ; page++) {
-    const query = new URLSearchParams({
-      'statuses[]': 'completed',
-      completed_at_start: from.toISOString(),
-      completed_at_end: to.toISOString(),
-      perPage: '100',
-      page: String(page),
-      all: '1',
-    });
-    const res = await sellauth(env, `/invoices?${query}`);
-
-    for (const invoice of res.data ?? []) {
-      stats.revenue += Number(invoice.price) || 0;
-      stats.orders++;
-      stats[saleType(invoice)]++;
-      stats.currency ??= invoice.currency;
-    }
-
-    if (page >= (res.last_page ?? 1)) return stats;
+    const query = new URLSearchParams({ ...params, perPage: '100', page: String(page) });
+    const res = await sellauth(env, `${path}?${query}`);
+    rows.push(...(res.data ?? []));
+    if (page >= (res.last_page ?? 1)) return rows;
   }
 }
 
-// Every paid subscription cycle gets its own invoice linked to the subscription.
+// subscription_cycle is 0 on the invoice that starts a subscription, 1, 2... on renewals.
 function saleType(invoice) {
   if (!invoice.product_subscription_id) return 'sale';
-  return invoice.subscription_cycle > 1 ? 'renewal' : 'newSub';
+  return invoice.subscription_cycle > 0 ? 'renewal' : 'newSub';
 }
 
 async function sellauth(env, path) {
@@ -241,8 +217,8 @@ async function push(env, { title, message, sound = 'shopify' }) {
     body: JSON.stringify({
       token: env.PUSHOVER_TOKEN,
       user: env.PUSHOVER_GROUP ?? env.PUSHOVER_USER,
-      title,
-      message,
+      title: title.slice(0, 250),
+      message: message.slice(0, 1024),
       sound,
     }),
   });
