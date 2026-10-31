@@ -19,6 +19,38 @@ export default {
           return new Response('✅ Test notification sent! Check your phones.');
         }
 
+        // TEMP: remove after fixing summary totals
+        if (url.pathname === '/debug') {
+          const now = new Date();
+          const from = startOfDay(env, now);
+          const query = new URLSearchParams({
+            'statuses[]': 'completed',
+            completed_at_start: from.toISOString(),
+            completed_at_end: now.toISOString(),
+            perPage: '100',
+            all: '1',
+          });
+          const res = await sellauth(env, `/invoices?${query}`);
+          return Response.json({
+            from,
+            to: now,
+            total: res.total,
+            last_page: res.last_page,
+            invoices: (res.data ?? []).map((i) => ({
+              id: i.id,
+              status: i.status,
+              price: i.price,
+              price_usd: i.price_usd,
+              paid_usd: i.paid_usd,
+              currency: i.currency,
+              created_at: i.created_at,
+              completed_at: i.completed_at,
+              subscription: i.product_subscription_id ?? null,
+              cycle: i.subscription_cycle ?? null,
+            })),
+          });
+        }
+
         if (url.pathname === '/summary') {
           await sendSummary(env);
           return new Response('✅ Summary sent! Check your phones.');
