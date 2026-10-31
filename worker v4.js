@@ -13,8 +13,8 @@ export default {
       try {
         if (url.pathname === '/test') {
           await push(env, {
-            title: 'New Sale!',
-            message: `$29.99 from Online Store\nToday: $420.00 · 12 orders\n• ${shopName(env)}`,
+            title: 'New Subscriber!',
+            message: `$5.00 new subscription\nToday: $42.88 · 8 orders\nMRR: $230.00 · 50 subscribers\n• ${shopName(env)}`,
           });
           return new Response('✅ Test notification sent! Check your phones.');
         }
@@ -73,25 +73,23 @@ async function buildNotification(event, data, env) {
   switch (event) {
     case 'NOTIFICATION.SHOP_INVOICE_PROCESSED': {
       const invoice = await sellauth(env, `/invoices/${data.invoice_id}`);
-      const type = saleType(invoice);
       const [today, subs] = await Promise.all([
         getStats(env, startOfDay(env), new Date()),
-        type === 'sale' ? '' : subscriptionLine(env),
+        subscriptionLine(env),
       ]);
       const amount = money(invoice.price_usd);
 
       const headline = {
-        sale: ['New Sale!', `${amount} from Online Store`],
         newSub: ['New Subscriber!', `${amount} new subscription`],
         renewal: ['Subscription Renewed', `${amount} renewal`],
-      }[type];
+      }[saleType(invoice)];
 
       return {
         title: headline[0],
         message:
           `${headline[1]}\n` +
           `Today: ${money(today.revenue)} · ${plural(today.orders, 'order')}\n` +
-          (subs ? `${subs}\n` : '') +
+          `${subs}\n` +
           `• ${shopName(env)}`,
       };
     }
@@ -138,7 +136,7 @@ async function sendSummary(env) {
   } else {
     message =
       `${money(today.revenue)} · ${plural(today.orders, 'order')} today\n` +
-      `${plural(today.sale, 'sale')} · ${plural(today.newSub, 'new subscriber')} · ${plural(today.renewal, 'renewal')}`;
+      `${plural(today.newSub, 'new subscriber')} · ${plural(today.renewal, 'renewal')}`;
   }
 
   if (yesterday.revenue > 0) {
@@ -160,7 +158,7 @@ async function subscriptionLine(env) {
 
 // Revenue in USD, like the dashboard: invoices can be in different currencies.
 async function getStats(env, from, to) {
-  const stats = { revenue: 0, orders: 0, sale: 0, newSub: 0, renewal: 0 };
+  const stats = { revenue: 0, orders: 0, newSub: 0, renewal: 0 };
   const invoices = await listAll(env, '/invoices', {
     'statuses[]': 'completed',
     completed_at_start: from.toISOString(),
@@ -192,9 +190,8 @@ async function listAll(env, path, params) {
   }
 }
 
-// subscription_cycle is 0 on the invoice that starts a subscription, 1, 2... on renewals.
+// All products are subscriptions: subscription_cycle is 0 on the first invoice, 1, 2... on renewals.
 function saleType(invoice) {
-  if (!invoice.product_subscription_id) return 'sale';
   return invoice.subscription_cycle > 0 ? 'renewal' : 'newSub';
 }
 
